@@ -1,10 +1,18 @@
 import 'package:flutter/material.dart';
-import 'screens/main_navigation.dart';
-import 'screens/booking_screen.dart';
-import 'screens/provider_dashboard_screen.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'core/env.dart';
+import 'screens/auth/auth_gate.dart';
 
-void main() {
-  runApp(const PetCareApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load(fileName: '.env');
+  await Supabase.initialize(
+    url: Env.supabaseUrl,
+    publishableKey: Env.supabaseAnonKey,
+  );
+  runApp(const ProviderScope(child: PetCareApp()));
 }
 
 class PetCareApp extends StatelessWidget {
@@ -17,17 +25,12 @@ class PetCareApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color.fromARGB(209, 4, 17, 185), 
+          seedColor: const Color.fromARGB(209, 4, 17, 185),
           brightness: Brightness.light,
         ),
         useMaterial3: true,
       ),
-      home: const MainNavigation(),
-      routes: {
-        '/home': (_) => const MainNavigation(),
-        '/booking': (_) => const BookingScreen(),
-        '/provider': (_) => const ProviderDashboardScreen(),
-      },
+      home: const AuthGate(),
     );
   }
 }
