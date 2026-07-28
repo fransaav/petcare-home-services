@@ -1,26 +1,35 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/booking.dart';
+import '../models/pet.dart';
 import '../models/service.dart';
+import '../models/service_provider.dart';
+import '../providers/auth_providers.dart';
+import '../providers/data_providers.dart';
 
-class BookingScreen extends StatefulWidget {
+class BookingScreen extends ConsumerStatefulWidget {
   final Service? service;
 
   const BookingScreen({super.key, this.service});
 
   @override
-  State<BookingScreen> createState() => _BookingScreenState();
+  ConsumerState<BookingScreen> createState() => _BookingScreenState();
 }
 
-class _BookingScreenState extends State<BookingScreen> {
+class _BookingScreenState extends ConsumerState<BookingScreen> {
   String _serviceType = 'pickup';
-  String? _selectedPet;
+  Pet? _selectedPet;
+  ServiceProvider? _selectedProvider;
   DateTime? _selectedDate;
   TimeOfDay? _selectedTime;
+  final _addressController = TextEditingController();
+  bool _submitting = false;
 
-  static const List<String> _pets = [
-    'Max — Labrador Retriever',
-    'Luna — Siamés',
-    'Coco — Poodle',
-  ];
+  @override
+  void dispose() {
+    _addressController.dispose();
+    super.dispose();
+  }
 
   Future<void> _selectDate() async {
     final picked = await showDatePicker(
@@ -40,15 +49,87 @@ class _BookingScreenState extends State<BookingScreen> {
     if (picked != null) setState(() => _selectedTime = picked);
   }
 
-  void _confirmPayment(String method) {
+  Future<void> _confirmBooking(PaymentMethod method) async {
+    final service = widget.service;
+    final ownerId = ref.read(currentUserIdProvider);
+
+    if (service == null || ownerId == null) return;
+    if (_selectedPet == null) {
+      _showError('Selecciona una mascota.');
+      return;
+    }
+    if (_selectedProvider == null) {
+      _showError(
+          'No hay proveedores disponibles para este servicio en este momento.');
+      return;
+    }
+    if (_selectedDate == null || _selectedTime == null) {
+      _showError('Selecciona la fecha y la hora del servicio.');
+      return;
+    }
+    final isHomeVisit = _serviceType == 'home_visit';
+    if (isHomeVisit && _addressController.text.trim().isEmpty) {
+      _showError('Ingresa la dirección para la visita a domicilio.');
+      return;
+    }
+    if (service.category.requiresVaccinationVerification &&
+        !_selectedPet!.hasVerifiedVaccination) {
+      _showError(
+        'Este servicio requiere que la mascota tenga un registro de vacunación verificado.',
+      );
+      return;
+    }
+
+    final scheduledAt = DateTime(
+      _selectedDate!.year,
+      _selectedDate!.month,
+      _selectedDate!.day,
+      _selectedTime!.hour,
+      _selectedTime!.minute,
+    );
+
+    setState(() => _submitting = true);
+    try {
+      final booking = Booking(
+        id: '',
+        petId: _selectedPet!.id,
+        ownerId: ownerId,
+        providerId: _selectedProvider!.id,
+        serviceId: service.id,
+        category: service.category,
+        deliveryMode:
+            isHomeVisit ? DeliveryMode.homeVisit : DeliveryMode.pickupDropOff,
+        paymentMethod: method,
+        scheduledAt: scheduledAt,
+        address: isHomeVisit ? _addressController.text.trim() : null,
+        price: service.price,
+        status: BookingStatus.pending,
+      );
+      await ref.read(bookingsRepositoryProvider).createBooking(booking);
+      if (!mounted) return;
+      _showConfirmationDialog(method);
+    } catch (e) {
+      _showError('No se pudo registrar la reserva: $e');
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _showConfirmationDialog(PaymentMethod method) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        icon: const Icon(Icons.check_circle_outline, color: Colors.green, size: 48),
+        icon: const Icon(Icons.check_circle_outline,
+            color: Colors.green, size: 48),
         title: const Text('¡Reserva Registrada!'),
         content: Text(
           'Servicio: ${widget.service?.name ?? "Servicio"}\n'
-          'Método de pago: $method\n\n'
+          'Método de pago: ${method == PaymentMethod.online ? "Pago en línea" : "Pago en ubicación"}\n\n'
           'Recibirás una confirmación próximamente.',
         ),
         actions: [
@@ -68,6 +149,17 @@ class _BookingScreenState extends State<BookingScreen> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final isHomeVisit = _serviceType == 'home_visit';
+    final petsAsync = ref.watch(petsProvider);
+    final providersAsync = widget.service != null
+        ? ref.watch(availableProvidersProvider(widget.service!.category))
+        : null;
+
+    // Selecciona automáticamente el primer proveedor disponible.
+    providersAsync?.whenData((providers) {
+      if (_selectedProvider == null && providers.isNotEmpty) {
+        _selectedProvider = providers.first;
+      }
+    });
 
     return Scaffold(
       appBar: AppBar(
@@ -136,28 +228,36 @@ class _BookingScreenState extends State<BookingScreen> {
             // ── Selección de mascota ─────────────────────────────────────────
             _SectionLabel('Seleccionar Mascota'),
             const SizedBox(height: 8),
-            InputDecorator(
-              decoration: InputDecoration(
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12)),
-                prefixIcon: const Icon(Icons.pets),
-                filled: true,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: _selectedPet,
-                  hint: const Text('Elige tu mascota'),
-                  isExpanded: true,
-                  isDense: true,
-                  items: _pets
-                      .map((p) =>
-                          DropdownMenuItem(value: p, child: Text(p)))
-                      .toList(),
-                  onChanged: (v) => setState(() => _selectedPet = v),
+            petsAsync.when(
+              data: (pets) => InputDecorator(
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  prefixIcon: const Icon(Icons.pets),
+                  filled: true,
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<Pet>(
+                    value: pets.contains(_selectedPet) ? _selectedPet : null,
+                    hint: Text(pets.isEmpty
+                        ? 'No tienes mascotas registradas'
+                        : 'Elige tu mascota'),
+                    isExpanded: true,
+                    isDense: true,
+                    items: pets
+                        .map((p) => DropdownMenuItem(
+                              value: p,
+                              child: Text('${p.name} — ${p.breed}'),
+                            ))
+                        .toList(),
+                    onChanged: (v) => setState(() => _selectedPet = v),
+                  ),
                 ),
               ),
+              loading: () => const LinearProgressIndicator(),
+              error: (e, st) => Text('Error al cargar mascotas: $e'),
             ),
 
             const SizedBox(height: 24),
@@ -167,8 +267,7 @@ class _BookingScreenState extends State<BookingScreen> {
             const SizedBox(height: 8),
             SegmentedButton<String>(
               selected: {_serviceType},
-              onSelectionChanged: (s) =>
-                  setState(() => _serviceType = s.first),
+              onSelectionChanged: (s) => setState(() => _serviceType = s.first),
               style: SegmentedButton.styleFrom(
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12)),
@@ -187,7 +286,7 @@ class _BookingScreenState extends State<BookingScreen> {
               ],
             ),
 
-            // ── Mapa placeholder (solo domicilio) ────────────────────────────
+            // ── Dirección (solo domicilio) ───────────────────────────────────
             AnimatedSize(
               duration: const Duration(milliseconds: 300),
               curve: Curves.easeInOut,
@@ -196,58 +295,38 @@ class _BookingScreenState extends State<BookingScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const SizedBox(height: 24),
-                        _SectionLabel('Ubicación del Domicilio'),
+                        _SectionLabel('Dirección del Domicilio'),
                         const SizedBox(height: 8),
+                        TextField(
+                          controller: _addressController,
+                          decoration: InputDecoration(
+                            hintText: 'Calle, número, ciudad',
+                            prefixIcon: const Icon(Icons.location_on_outlined),
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
                         Container(
                           width: double.infinity,
-                          height: 200,
+                          height: 140,
                           decoration: BoxDecoration(
                             color: colorScheme.surfaceContainerHighest,
                             borderRadius: BorderRadius.circular(16),
                             border: Border.all(
                                 color: colorScheme.outline, width: 1),
                           ),
-                          clipBehavior: Clip.antiAlias,
-                          child: Stack(
-                            alignment: Alignment.center,
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              // Cuadrícula que simula un mapa
-                              CustomPaint(
-                                size: const Size.fromHeight(200),
-                                painter: _MapGridPainter(
-                                    color: colorScheme.outlineVariant),
-                              ),
-                              Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.map_outlined,
-                                      size: 52, color: colorScheme.primary),
-                                  const SizedBox(height: 8),
-                                  Text('Mapa de Ubicación',
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: colorScheme.onSurface)),
-                                  Text(
-                                    'Integración con Google Maps\n(próximamente con Supabase)',
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                        fontSize: 12,
-                                        color: colorScheme.onSurfaceVariant),
-                                  ),
-                                ],
-                              ),
-                              Positioned(
-                                bottom: 12,
-                                right: 12,
-                                child: FilledButton.icon(
-                                  onPressed: () {},
-                                  icon: const Icon(Icons.my_location, size: 16),
-                                  label: const Text('Mi ubicación'),
-                                  style: FilledButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 12, vertical: 8),
-                                  ),
-                                ),
+                              Icon(Icons.map_outlined,
+                                  size: 40, color: colorScheme.primary),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Integración con mapas — próximamente',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: colorScheme.onSurfaceVariant),
                               ),
                             ],
                           ),
@@ -256,6 +335,21 @@ class _BookingScreenState extends State<BookingScreen> {
                     )
                   : const SizedBox.shrink(),
             ),
+
+            const SizedBox(height: 24),
+
+            // ── Proveedor asignado ───────────────────────────────────────────
+            _SectionLabel('Proveedor Asignado'),
+            const SizedBox(height: 8),
+            if (providersAsync != null)
+              providersAsync.when(
+                data: (providers) => providers.isEmpty
+                    ? const Text(
+                        'No hay proveedores disponibles en este momento.')
+                    : Text(_selectedProvider?.name ?? providers.first.name),
+                loading: () => const LinearProgressIndicator(),
+                error: (e, st) => Text('Error al cargar proveedores: $e'),
+              ),
 
             const SizedBox(height: 24),
 
@@ -306,7 +400,9 @@ class _BookingScreenState extends State<BookingScreen> {
             _SectionLabel('Método de Pago'),
             const SizedBox(height: 12),
             FilledButton.icon(
-              onPressed: () => _confirmPayment('Pago en línea'),
+              onPressed: _submitting
+                  ? null
+                  : () => _confirmBooking(PaymentMethod.online),
               icon: const Icon(Icons.credit_card),
               label: const Text('Pagar Ahora (En línea)'),
               style: FilledButton.styleFrom(
@@ -317,7 +413,9 @@ class _BookingScreenState extends State<BookingScreen> {
             ),
             const SizedBox(height: 12),
             OutlinedButton.icon(
-              onPressed: () => _confirmPayment('Pago en ubicación'),
+              onPressed: _submitting
+                  ? null
+                  : () => _confirmBooking(PaymentMethod.atLocation),
               icon: const Icon(Icons.payments_outlined),
               label: const Text('Pagar en la Ubicación'),
               style: OutlinedButton.styleFrom(
@@ -326,6 +424,10 @@ class _BookingScreenState extends State<BookingScreen> {
                     borderRadius: BorderRadius.circular(12)),
               ),
             ),
+            if (_submitting) ...[
+              const SizedBox(height: 16),
+              const Center(child: CircularProgressIndicator()),
+            ],
 
             const SizedBox(height: 32),
           ],
@@ -351,26 +453,4 @@ class _SectionLabel extends StatelessWidget {
           ?.copyWith(fontWeight: FontWeight.bold),
     );
   }
-}
-
-class _MapGridPainter extends CustomPainter {
-  final Color color;
-  const _MapGridPainter({required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 0.8;
-    const spacing = 22.0;
-    for (double x = 0; x < size.width; x += spacing) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (double y = 0; y < size.height; y += spacing) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
