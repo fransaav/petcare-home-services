@@ -7,6 +7,9 @@
 .buildlog/
 .history
 
+# Variables de entorno con credenciales de Supabase (nunca versionar)
+.env
+
 
 
 # Flutter repo-specific
