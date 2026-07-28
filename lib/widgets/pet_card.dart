@@ -1,15 +1,23 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../models/pet.dart';
 
 class PetCard extends StatelessWidget {
   final Pet pet;
+  final VoidCallback? onUploadVaccination;
+  final VoidCallback? onEdit;
 
-  const PetCard({super.key, required this.pet});
+  const PetCard({
+    super.key,
+    required this.pet,
+    this.onUploadVaccination,
+    this.onEdit,
+  });
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final vaccineOk = pet.hasVaccinationRecord;
+    final vaccineOk = pet.hasVerifiedVaccination;
 
     return Card(
       elevation: 2,
@@ -30,10 +38,20 @@ class PetCard extends StatelessWidget {
                     color: colorScheme.secondaryContainer,
                     borderRadius: BorderRadius.circular(16),
                   ),
-                  child: Center(
-                    child: Text(pet.imageEmoji,
-                        style: const TextStyle(fontSize: 40)),
-                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: pet.photoUrl != null
+                      ? CachedNetworkImage(
+                          imageUrl: pet.photoUrl!,
+                          fit: BoxFit.cover,
+                          errorWidget: (_, __, ___) => Center(
+                            child: Text(pet.fallbackEmoji,
+                                style: const TextStyle(fontSize: 40)),
+                          ),
+                        )
+                      : Center(
+                          child: Text(pet.fallbackEmoji,
+                              style: const TextStyle(fontSize: 40)),
+                        ),
                 ),
                 const SizedBox(width: 16),
 
@@ -74,10 +92,7 @@ class PetCard extends StatelessWidget {
               children: [
                 // Editar (secundario)
                 OutlinedButton.icon(
-                  onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                        content: Text('Editando perfil de ${pet.name}')),
-                  ),
+                  onPressed: onEdit,
                   icon: const Icon(Icons.edit_outlined, size: 16),
                   label: const Text('Editar'),
                   style: OutlinedButton.styleFrom(
@@ -90,17 +105,7 @@ class PetCard extends StatelessWidget {
                 // Subir registro de vacunación (primario, destacado)
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: () =>
-                        ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                            'Subir registro de vacunación — ${pet.name}'),
-                        action: SnackBarAction(
-                          label: 'OK',
-                          onPressed: () {},
-                        ),
-                      ),
-                    ),
+                    onPressed: onUploadVaccination,
                     icon: const Icon(Icons.upload_file, size: 16),
                     label: const Text(
                       'Subir registro de vacunación',
